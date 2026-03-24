@@ -1,6 +1,14 @@
 
 import { useEffect, useRef, useState, useCallback } from "react";
+import { Link } from "react-router-dom";
 import * as tmImage from "@teachablemachine/image";
+import { useSessionTracker } from "./hooks/useSessionTracker";
+
+// Normalise labels from metadata.json to match LABEL_CONFIG keys
+const normalizeLabel = (name) => {
+  const map = { recycling: "Recycling", "no waste": "No Waste" };
+  return map[name] || name;
+};
 
 const MODEL_URL = "/model/";
 const LABELS = ["Trash", "Compost", "Recycling", "No Waste"];
@@ -63,6 +71,25 @@ function App() {
   const [error, setError] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
 
+  const { trackPrediction, resetTracking, lastSaved, saveError } = useSessionTracker();
+  const [toast, setToast] = useState(null); // { id, type, className, confidence } | null
+
+  // Show success toast when a session is saved
+  useEffect(() => {
+    if (!lastSaved) return;
+    setToast({ id: lastSaved.at, type: "success", className: lastSaved.className, confidence: lastSaved.confidence });
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [lastSaved]);
+
+  // Show error toast when a save fails
+  useEffect(() => {
+    if (!saveError) return;
+    setToast({ id: Date.now(), type: "error", message: saveError });
+    const t = setTimeout(() => setToast(null), 5000);
+    return () => clearTimeout(t);
+  }, [saveError]);
+
   const startWebcam = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -116,15 +143,16 @@ function App() {
 
     const results = await model.predict(video);
     const mapped = results.map((r) => ({
-      className: r.className,
+      className: normalizeLabel(r.className),
       probability: r.probability,
     }));
     mapped.sort((a, b) => b.probability - a.probability);
     setPredictions(mapped);
     setTopClass(mapped[0]);
+    trackPrediction(mapped[0]);
 
     animFrameRef.current = requestAnimationFrame(predict);
-  }, []);
+  }, [trackPrediction]);
 
   const handleStart = useCallback(async () => {
     await startWebcam();
@@ -135,10 +163,11 @@ function App() {
   const handleStop = useCallback(() => {
     if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     stopWebcam();
+    resetTracking();
     setIsRunning(false);
     setPredictions([]);
     setTopClass(null);
-  }, [stopWebcam]);
+  }, [stopWebcam, resetTracking]);
 
   useEffect(() => {
     return () => {
@@ -202,8 +231,20 @@ function App() {
             </div>
           </div>
 
-          {/* Status pill */}
+          {/* Nav links + status pill */}
           <div className="flex items-center gap-2">
+            <Link
+              to="/"
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-white/[0.06] hidden sm:block"
+            >
+              Home
+            </Link>
+            <Link
+              to="/train"
+              className="text-xs text-slate-500 hover:text-slate-300 transition-colors px-2.5 py-1.5 rounded-lg hover:bg-white/[0.06] hidden sm:block"
+            >
+              Train
+            </Link>
             {isLoading && !isRunning && (
               <div className="shimmer flex items-center gap-2 text-xs text-slate-500 px-3 py-1.5 rounded-full bg-white/[0.04] border border-white/[0.06]">
                 <svg className="animate-spin h-3.5 w-3.5 text-cyan-500" viewBox="0 0 24 24">
@@ -233,6 +274,18 @@ function App() {
           <div className="mb-6 p-4 bg-red-500/[0.08] border border-red-500/20 rounded-2xl text-red-300 text-sm flex items-center gap-3 animate-slide-up">
             <span className="text-xl">⚠️</span>
             {error}
+          </div>
+        )}
+
+        {saveError && (
+          <div className="mb-6 p-4 bg-orange-500/[0.08] border border-orange-500/20 rounded-2xl text-orange-300 text-sm flex items-center gap-3 animate-slide-up">
+            <span className="text-xl">🔥</span>
+            <span>
+              <strong>Firestore save failed:</strong> {saveError}.{" "}
+              {saveError === "permission-denied"
+                ? "Open Firebase Console → Firestore → Rules and allow reads/writes."
+                : "Check your Firebase config in .env."}
+            </span>
           </div>
         )}
 
@@ -320,6 +373,18 @@ function App() {
                   <span className={`text-xl font-extrabold ml-1 ${topConfig.text}`}>
                     {(topClass.probability * 100).toFixed(0)}%
                   </span>
+                </div>
+              )}
+
+              {/* In-frame "uploading" indicator — shows while toast is visible */}
+              {isRunning && toast?.type === "success" && (
+                <div
+                  key={toast.id}
+                  className="absolute top-4 left-4 flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-xl border text-xs font-medium text-emerald-300 animate-fade-in"
+                  style={{ background: "rgba(16,185,129,0.15)", borderColor: "rgba(16,185,129,0.3)" }}
+                >
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                  ✓ Logged to Firestore
                 </div>
               )}
 
@@ -504,6 +569,102 @@ function App() {
           </div>
         </div>
       </main>
+
+      {/* ── Toast notification ──────────────────────────── */}
+      {toast && (
+        <div className="fixed bottom-6 right-6 z-50 animate-toast-in w-72">
+          {toast.type === "success" ? (
+            <div
+              className="rounded-2xl overflow-hidden border border-emerald-500/25 backdrop-blur-2xl"
+              style={{ background: "rgba(4,30,18,0.92)", boxShadow: "0 0 48px rgba(16,185,129,0.2), 0 8px 32px rgba(0,0,0,0.5)" }}
+            >
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  {/* Category icon */}
+                  <div
+                    className={`w-11 h-11 rounded-xl flex items-center justify-center text-2xl shrink-0 ${LABEL_CONFIG[toast.className]?.bg ?? "bg-white/[0.06]"}`}
+                  >
+                    {LABEL_CONFIG[toast.className]?.icon ?? "📦"}
+                  </div>
+
+                  {/* Text */}
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-1.5 mb-0.5">
+                      <span className="text-[10px] font-semibold text-emerald-400 uppercase tracking-wider">
+                        Session Saved
+                      </span>
+                      <span className="text-[10px] text-slate-600">· Firestore</span>
+                    </div>
+                    <p className="text-sm font-bold text-white leading-tight">
+                      {toast.className}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {(toast.confidence * 100).toFixed(0)}% confidence ·{" "}
+                      {new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}
+                    </p>
+                  </div>
+
+                  {/* Dismiss */}
+                  <button
+                    onClick={() => setToast(null)}
+                    className="text-slate-600 hover:text-slate-300 text-lg leading-none shrink-0 transition-colors cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+
+              {/* Drain progress bar */}
+              <div className="h-0.5 bg-white/[0.05]">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-cyan-500 animate-toast-drain"
+                  style={{ "--drain-duration": "4s" }}
+                />
+              </div>
+            </div>
+          ) : (
+            <div
+              className="rounded-2xl overflow-hidden border border-red-500/25 backdrop-blur-2xl"
+              style={{ background: "rgba(30,4,4,0.92)", boxShadow: "0 0 48px rgba(239,68,68,0.2), 0 8px 32px rgba(0,0,0,0.5)" }}
+            >
+              <div className="p-4">
+                <div className="flex items-start gap-3">
+                  <div className="w-11 h-11 rounded-xl bg-red-500/15 flex items-center justify-center text-2xl shrink-0">
+                    🔥
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-[10px] font-semibold text-red-400 uppercase tracking-wider mb-0.5">
+                      Save Failed
+                    </p>
+                    <p className="text-sm font-bold text-white leading-tight">
+                      {toast.message === "permission-denied"
+                        ? "Firestore permission denied"
+                        : "Could not reach Firestore"}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      {toast.message === "permission-denied"
+                        ? "Update security rules in Firebase Console"
+                        : toast.message}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setToast(null)}
+                    className="text-slate-600 hover:text-slate-300 text-lg leading-none shrink-0 transition-colors cursor-pointer"
+                  >
+                    ×
+                  </button>
+                </div>
+              </div>
+              <div className="h-0.5 bg-white/[0.05]">
+                <div
+                  className="h-full bg-gradient-to-r from-red-500 to-rose-500 animate-toast-drain"
+                  style={{ "--drain-duration": "5s" }}
+                />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

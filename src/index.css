@@ -50,6 +50,16 @@
   to   { transform: rotate(360deg); }
 }
 
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(60px) scale(0.94); }
+  to   { opacity: 1; transform: translateX(0)    scale(1);    }
+}
+
+@keyframes toast-drain {
+  from { width: 100%; }
+  to   { width: 0%;   }
+}
+
 /* ── Utility classes ───────────────────────────────── */
 .animate-scan-line {
   position: absolute;
@@ -78,6 +88,14 @@
 
 .animate-rotate-slow {
   animation: rotate-slow 8s linear infinite;
+}
+
+.animate-toast-in {
+  animation: toast-in 0.4s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-toast-drain {
+  animation: toast-drain var(--drain-duration, 4s) linear forwards;
 }
 
 /* Glassmorphism panel */
